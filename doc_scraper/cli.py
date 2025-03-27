@@ -54,6 +54,9 @@ def cli():
     "--pool-maxsize", default=100, help="Maximum number of connections per pool"
 )
 @click.option("--no-pool-block", is_flag=True, help="Do not block when pool is full")
+@click.option(
+    "--ascii-only", is_flag=True, help="Filter non-ASCII characters in PDF output"
+)
 def scrape(
     url: str,
     depth: int,
@@ -66,6 +69,7 @@ def scrape(
     pool_connections: int,
     pool_maxsize: int,
     no_pool_block: bool,
+    ascii_only: bool,
 ):
     """Scrape content from a website starting from the given URL."""
     setup_logging(verbose)

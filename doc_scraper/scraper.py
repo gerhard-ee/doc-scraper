@@ -388,6 +388,19 @@ class WebScraper:
         for child in node.children:
             self._write_menu_tree_text(f, child, content)
 
+    def _sanitize_text_for_pdf(self, text: str) -> str:
+        """
+        Sanitize text for PDF output to avoid font encoding issues.
+        Replaces or removes characters that might not be supported by the PDF font.
+        """
+        # Option 1: Replace non-ASCII characters with their closest ASCII equivalent
+        text = text.encode("ascii", "replace").decode("ascii")
+
+        # Option 2: Remove characters that are not printable ASCII
+        # text = ''.join(c for c in text if c.isascii() and c.isprintable())
+
+        return text
+
     def save_as_pdf(self, content: Dict[str, str], output_file: str):
         """Save content to a PDF file."""
         output_path = Path(self.config.output_dir) / output_file
@@ -412,7 +425,9 @@ class WebScraper:
                 # Add content pages
                 for url, text in content.items():
                     pdf.add_page()
-                    self._format_page(pdf, url, text)
+                    # Sanitize text before writing to PDF
+                    sanitized_text = self._sanitize_text_for_pdf(text)
+                    self._format_page(pdf, url, sanitized_text)
 
             pdf.output(str(output_path))
             logger.info(f"Content saved to {output_path}")
@@ -492,7 +507,8 @@ class WebScraper:
 
         # Write level and title
         pdf.set_font("Helvetica", "B", size=16)
-        pdf.write(8, f"Level {node.level}: {node.title}\n\n")
+        sanitized_title = self._sanitize_text_for_pdf(node.title)
+        pdf.write(8, f"Level {node.level}: {sanitized_title}\n\n")
 
         # Write URL
         pdf.set_font("Helvetica", "I", size=12)
@@ -502,7 +518,9 @@ class WebScraper:
         if node.url in content:
             pdf.set_font("Helvetica", size=12)
             text = content[node.url]
-            lines = text.split("\n")
+            # Sanitize text before writing to PDF
+            sanitized_text = self._sanitize_text_for_pdf(text)
+            lines = sanitized_text.split("\n")
             for line in lines:
                 if line.strip():
                     pdf.write(8, line + "\n")

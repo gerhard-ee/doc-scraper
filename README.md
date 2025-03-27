@@ -57,6 +57,9 @@ docscraper scrape https://docs.databricks.com/aws/en/ -d 2
 
 # Traverse menu 3 levels deep and save as PDF
 docscraper scrape https://docs.databricks.com/aws/en/ -d 3 -f pdf
+
+# Fix Unicode character issues in PDF output
+docscraper scrape https://docs.databricks.com/aws/en/ -f pdf --ascii-only
 ```
 
 You can also use the included shell script:
