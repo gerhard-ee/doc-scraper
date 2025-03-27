@@ -140,11 +140,11 @@ class WebScraper:
         logger.info("Cleanup completed")
 
     def scrape_page(
-        self, 
-        url: str, 
-        max_depth: int = 0, 
+        self,
+        url: str,
+        max_depth: int = 0,
         parent_node: Optional[MenuNode] = None,
-        progress_bar: Optional[tqdm] = None
+        progress_bar: Optional[tqdm] = None,
     ) -> Tuple[Dict[str, str], Optional[MenuNode]]:
         """
         Scrape content from a given URL and optionally traverse its menu.
@@ -232,7 +232,9 @@ class WebScraper:
                         f"Found {len(menu_links)} menu items at depth {max_depth}"
                     )
                 elif menu_links and progress_bar:
-                    progress_bar.set_description(f"Found {len(menu_links)} sub-pages to process")
+                    progress_bar.set_description(
+                        f"Found {len(menu_links)} sub-pages to process"
+                    )
                     progress_bar.update(0)  # Refresh without incrementing
 
                 # If we have a lot of links, update the progress bar total
@@ -321,39 +323,35 @@ class WebScraper:
 
         # Show immediate feedback with an initial progress bar
         with tqdm(
-            total=1, 
-            desc="Initializing scraper", 
-            unit="step", 
-            position=0, 
-            leave=True
+            total=1, desc="Initializing scraper", unit="step", position=0, leave=True
         ) as init_pbar:
             # Update immediately to show activity
             init_pbar.update(1)
-        
+
         # Create progress bar for overall scraping process
         with tqdm(
             total=100,  # Start with estimated total, will update later
-            desc="Overall Progress", 
-            unit="page", 
+            desc="Overall Progress",
+            unit="page",
             position=0,
-            leave=True
+            leave=True,
         ) as pbar:
             # Show immediate activity
             pbar.set_description("Preparing to fetch initial page...")
             pbar.update(1)
-            
+
             try:
                 # Show activity while making the initial request
                 pbar.set_description("Fetching initial page...")
                 pbar.update(1)
-                
+
                 result, _ = self.scrape_page(url, max_depth, progress_bar=pbar)
-                
+
                 # Update with actual count
                 pbar.total = len(self.visited_urls)
                 pbar.n = len(self.visited_urls)
                 pbar.refresh()
-                
+
                 logger.info(f"Successfully scraped {len(self.visited_urls)} pages")
                 return result
             except Exception as e:
@@ -362,6 +360,73 @@ class WebScraper:
 
     def _extract_title(self, soup: BeautifulSoup) -> str:
         """Extract the title from the page."""
+        # Try to find the title in various ways
+        title = None
+
+        # Try h1 tag first
+        h1 = soup.find("h1")
+        if h1:
+            title = h1.get_text().strip()
+
+        # Try title tag if no h1
+        if not title:
+            title_tag = soup.find("title")
+            if title_tag:
+                title = title_tag.get_text().strip()
+
+        # If still no title, use the URL
+        if not title:
+            title = (
+                urlparse(self.base_url or "")
+                .path.split("/")[-1]
+                .replace("-", " ")
+                .title()
+            )
+
+        return title
+
+    def _extract_text(self, soup: BeautifulSoup) -> str:
+        """Extract and clean text content from a BeautifulSoup object."""
+        # Remove unwanted elements
+        for element in soup(["script", "style", "nav", "footer", "iframe"]):
+            element.decompose()
+
+        # Get text content
+        text = soup.get_text()
+
+        # Clean up text
+        lines = (line.strip() for line in text.splitlines())
+        chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+        text = "\n".join(chunk for chunk in chunks if chunk)
+
+        # Remove excessive newlines
+        text = re.sub(r"\n{3,}", "\n\n", text)
+
+        return text.strip()
+
+    def _find_menu_links(self, soup: BeautifulSoup, current_url: str) -> List[str]:
+        """Find menu links in the page."""
+        menu_links = set()
+
+        for selector in self.config.menu_selectors:
+            for link in soup.select(selector):
+                href = link.get("href")
+                if href and isinstance(href, str):
+                    # Convert relative URLs to absolute
+                    absolute_url = urljoin(current_url, href)
+
+                    # Only include URLs from the same domain and path
+                    if (
+                        self._is_valid_url(absolute_url)
+                        and self.base_url is not None
+                        and absolute_url.startswith(self.base_url)
+                        and not any(
+                            x in absolute_url
+                            for x in ["#", "?", "javascript:", "mailto:", "tel:"]
+                        )
+                    ):
+                        menu_links.add(absolute_url)
+
         return list(menu_links)
 
     def save_as_text(self, content: Dict[str, str], output_file: str):
