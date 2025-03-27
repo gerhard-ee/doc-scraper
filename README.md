@@ -87,6 +87,8 @@ Options:
 - `--pool-connections`: Number of connection pools to keep (default: 100)
 - `--pool-maxsize`: Maximum number of connections per pool (default: 100)
 - `--no-pool-block`: Do not block when pool is full
+- `--ascii-only`: Filter non-ASCII characters in PDF output (default: enabled)
+- `--verbose-progress`: Show detailed progress including site names being scraped
 
 ### Python API
 

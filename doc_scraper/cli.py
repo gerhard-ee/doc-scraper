@@ -55,7 +55,15 @@ def cli():
 )
 @click.option("--no-pool-block", is_flag=True, help="Do not block when pool is full")
 @click.option(
-    "--ascii-only", is_flag=True, help="Filter non-ASCII characters in PDF output"
+    "--ascii-only",
+    is_flag=True,
+    default=True,
+    help="Filter non-ASCII characters in PDF output (default: enabled)",
+)
+@click.option(
+    "--verbose-progress",
+    is_flag=True,
+    help="Show detailed progress including site names being scraped",
 )
 def scrape(
     url: str,
@@ -70,12 +78,16 @@ def scrape(
     pool_maxsize: int,
     no_pool_block: bool,
     ascii_only: bool,
+    verbose_progress: bool,
 ):
     """Scrape content from a website starting from the given URL."""
     setup_logging(verbose)
     logger = logging.getLogger(__name__)
 
     try:
+        # Show immediate feedback
+        print(f"Doc Scraper starting... URL: {url}")
+
         # Create configuration
         config = ScraperConfig(
             timeout=timeout,
@@ -85,6 +97,7 @@ def scrape(
             pool_connections=pool_connections,
             pool_maxsize=pool_maxsize,
             pool_block=not no_pool_block,
+            verbose_progress=verbose_progress,
         )
 
         # Create and run scraper
@@ -93,12 +106,15 @@ def scrape(
 
         # Save results based on format
         if format in ["text", "both"]:
+            print(f"Saving content as text...")
             scraper.save_as_text(content, "scraped_content.txt")
 
         if format in ["pdf", "both"]:
+            print(f"Saving content as PDF...")
             scraper.save_as_pdf(content, "scraped_content.pdf")
 
         if format in ["json", "both"]:
+            print(f"Saving menu tree as JSON...")
             scraper.save_menu_tree("menu_tree.json")
 
         logger.info(f"Successfully scraped {len(content)} pages")

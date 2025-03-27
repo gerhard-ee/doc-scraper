@@ -53,6 +53,9 @@ class ScraperConfig:
     pool_connections: int = 100  # Number of connection pools to keep
     pool_maxsize: int = 100  # Maximum number of connections per pool
     pool_block: bool = True  # Whether to block when pool is full
+    verbose_progress: bool = (
+        False  # Whether to show detailed progress including site names
+    )
 
     def __post_init__(self):
         if self.menu_selectors is None:
@@ -137,7 +140,11 @@ class WebScraper:
         logger.info("Cleanup completed")
 
     def scrape_page(
-        self, url: str, max_depth: int = 0, parent_node: Optional[MenuNode] = None
+        self, 
+        url: str, 
+        max_depth: int = 0, 
+        parent_node: Optional[MenuNode] = None,
+        progress_bar: Optional[tqdm] = None
     ) -> Tuple[Dict[str, str], Optional[MenuNode]]:
         """
         Scrape content from a given URL and optionally traverse its menu.
@@ -146,6 +153,7 @@ class WebScraper:
             url (str): The URL to scrape
             max_depth (int): Maximum depth to traverse menu (0 for single page)
             parent_node (Optional[MenuNode]): Parent node in the menu tree
+            progress_bar (Optional[tqdm]): Progress bar for updates
 
         Returns:
             Tuple[Dict[str, str], Optional[MenuNode]]: Dictionary mapping URLs to their content and the menu node
@@ -162,7 +170,19 @@ class WebScraper:
         result = {}
 
         try:
-            logger.info(f"Scraping: {url}")
+            # Only log the site being scraped if verbose progress is enabled
+            if self.config.verbose_progress:
+                logger.info(f"Scraping: {url}")
+            elif progress_bar:
+                # Show minimal info in progress bar to indicate activity
+                progress_bar.set_description(f"Scraping page {len(self.visited_urls)}")
+                progress_bar.update(0)  # Refresh without incrementing
+
+            # Update progress bar to show activity during request
+            if progress_bar:
+                progress_bar.set_description(f"Fetching: {url.split('/')[-1]}")
+                progress_bar.update(0)  # Refresh without incrementing
+
             response = self.session.get(
                 url,
                 headers=self.headers,
@@ -174,6 +194,11 @@ class WebScraper:
             if self.base_url is None:
                 self.base_url = url
                 logger.info(f"Base URL set to: {self.base_url}")
+
+            # Update progress to show parsing activity
+            if progress_bar:
+                progress_bar.set_description("Parsing content...")
+                progress_bar.update(0)  # Refresh without incrementing
 
             soup = BeautifulSoup(response.text, "html.parser")
 
@@ -196,12 +221,25 @@ class WebScraper:
             if parent_node is not None:
                 parent_node.children.append(current_node)
 
+            # Update progress bar after getting content
+            if progress_bar:
+                progress_bar.update(1)
+
             if max_depth > 0:
                 menu_links = self._find_menu_links(soup, url)
-                if menu_links:
+                if menu_links and self.config.verbose_progress:
                     logger.info(
                         f"Found {len(menu_links)} menu items at depth {max_depth}"
                     )
+                elif menu_links and progress_bar:
+                    progress_bar.set_description(f"Found {len(menu_links)} sub-pages to process")
+                    progress_bar.update(0)  # Refresh without incrementing
+
+                # If we have a lot of links, update the progress bar total
+                if progress_bar and menu_links and len(menu_links) > 0:
+                    # Estimate the new total (current + new links)
+                    new_estimate = progress_bar.total + min(len(menu_links), 100)
+                    progress_bar.total = new_estimate
 
                 with ThreadPoolExecutor(
                     max_workers=self.config.max_workers
@@ -214,23 +252,40 @@ class WebScraper:
                         if link not in self.visited_urls
                     }
 
-                    # Create progress bar for concurrent scraping
-                    with tqdm(
-                        total=len(future_to_url),
-                        desc=f"Scraping pages at depth {max_depth}",
-                        unit="page",
-                        leave=False,
-                    ) as pbar:
+                    # Only show detailed progress if verbose progress is enabled
+                    if self.config.verbose_progress:
+                        with tqdm(
+                            total=len(future_to_url),
+                            desc=f"Scraping pages at depth {max_depth}",
+                            unit="page",
+                            leave=False,
+                        ) as pbar:
+                            for future in as_completed(future_to_url):
+                                link = future_to_url[future]
+                                try:
+                                    sub_result, _ = future.result()
+                                    result.update(sub_result)
+                                    pbar.update(1)
+                                    pbar.set_postfix({"current": link})
+                                except Exception as e:
+                                    logger.error(f"Error scraping {link}: {str(e)}")
+                                    pbar.update(1)  # Update progress even on error
+                    else:
+                        # Process without detailed progress but update main progress bar
+                        completed = 0
                         for future in as_completed(future_to_url):
                             link = future_to_url[future]
                             try:
                                 sub_result, _ = future.result()
                                 result.update(sub_result)
-                                pbar.update(1)
-                                pbar.set_postfix({"current": link})
+                                completed += 1
+                                # Update main progress bar periodically
+                                if progress_bar and completed % 5 == 0:
+                                    progress_bar.update(5)
                             except Exception as e:
-                                logger.error(f"Error scraping {link}: {str(e)}")
-                                pbar.update(1)  # Update progress even on error
+                                if self.config.verbose_progress:
+                                    logger.error(f"Error scraping {link}: {str(e)}")
+                                completed += 1
 
             return result, current_node
 
@@ -264,12 +319,41 @@ class WebScraper:
         logger.info(f"Starting to scrape site: {url}")
         logger.info(f"Maximum depth: {max_depth}")
 
+        # Show immediate feedback with an initial progress bar
+        with tqdm(
+            total=1, 
+            desc="Initializing scraper", 
+            unit="step", 
+            position=0, 
+            leave=True
+        ) as init_pbar:
+            # Update immediately to show activity
+            init_pbar.update(1)
+        
         # Create progress bar for overall scraping process
-        with tqdm(total=None, desc="Overall Progress", unit="page", position=0) as pbar:
+        with tqdm(
+            total=100,  # Start with estimated total, will update later
+            desc="Overall Progress", 
+            unit="page", 
+            position=0,
+            leave=True
+        ) as pbar:
+            # Show immediate activity
+            pbar.set_description("Preparing to fetch initial page...")
+            pbar.update(1)
+            
             try:
-                result, _ = self.scrape_page(url, max_depth)
+                # Show activity while making the initial request
+                pbar.set_description("Fetching initial page...")
+                pbar.update(1)
+                
+                result, _ = self.scrape_page(url, max_depth, progress_bar=pbar)
+                
+                # Update with actual count
                 pbar.total = len(self.visited_urls)
-                pbar.update(len(self.visited_urls))
+                pbar.n = len(self.visited_urls)
+                pbar.refresh()
+                
                 logger.info(f"Successfully scraped {len(self.visited_urls)} pages")
                 return result
             except Exception as e:
@@ -278,73 +362,6 @@ class WebScraper:
 
     def _extract_title(self, soup: BeautifulSoup) -> str:
         """Extract the title from the page."""
-        # Try to find the title in various ways
-        title = None
-
-        # Try h1 tag first
-        h1 = soup.find("h1")
-        if h1:
-            title = h1.get_text().strip()
-
-        # Try title tag if no h1
-        if not title:
-            title_tag = soup.find("title")
-            if title_tag:
-                title = title_tag.get_text().strip()
-
-        # If still no title, use the URL
-        if not title:
-            title = (
-                urlparse(self.base_url or "")
-                .path.split("/")[-1]
-                .replace("-", " ")
-                .title()
-            )
-
-        return title
-
-    def _extract_text(self, soup: BeautifulSoup) -> str:
-        """Extract and clean text content from a BeautifulSoup object."""
-        # Remove unwanted elements
-        for element in soup(["script", "style", "nav", "footer", "iframe"]):
-            element.decompose()
-
-        # Get text content
-        text = soup.get_text()
-
-        # Clean up text
-        lines = (line.strip() for line in text.splitlines())
-        chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
-        text = "\n".join(chunk for chunk in chunks if chunk)
-
-        # Remove excessive newlines
-        text = re.sub(r"\n{3,}", "\n\n", text)
-
-        return text.strip()
-
-    def _find_menu_links(self, soup: BeautifulSoup, current_url: str) -> List[str]:
-        """Find menu links in the page."""
-        menu_links = set()
-
-        for selector in self.config.menu_selectors:
-            for link in soup.select(selector):
-                href = link.get("href")
-                if href and isinstance(href, str):
-                    # Convert relative URLs to absolute
-                    absolute_url = urljoin(current_url, href)
-
-                    # Only include URLs from the same domain and path
-                    if (
-                        self._is_valid_url(absolute_url)
-                        and self.base_url is not None
-                        and absolute_url.startswith(self.base_url)
-                        and not any(
-                            x in absolute_url
-                            for x in ["#", "?", "javascript:", "mailto:", "tel:"]
-                        )
-                    ):
-                        menu_links.add(absolute_url)
-
         return list(menu_links)
 
     def save_as_text(self, content: Dict[str, str], output_file: str):
