@@ -3,14 +3,11 @@ from bs4 import BeautifulSoup
 from urllib.parse import urlparse, urljoin
 from fpdf import FPDF
 import re
-from typing import Set, List, Dict, Optional, Tuple, Deque
-from collections import deque
+from typing import Set, List, Dict, Optional, Tuple
 import time
-from dataclasses import dataclass, field
-from collections import defaultdict, OrderedDict
+from collections import OrderedDict
 import logging
 import json
-import os
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib3.util.retry import Retry
@@ -20,89 +17,14 @@ import sys
 from tqdm import tqdm
 from functools import lru_cache
 
+from .config import ScraperConfig
+from .models import MenuNode
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class ScraperConfig:
-    """Configuration for the web scraper."""
-
-    timeout: int = 60
-    retry_count: int = 3
-    retry_delay: int = 2
-    max_workers: int = 5
-    batch_size: int = 20  # Process URLs in batches to manage memory
-    output_dir: str = "output"
-    user_agent: str = (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-    )
-    menu_selectors: List[str] = field(
-        default_factory=lambda: [
-            'nav[role="navigation"] a',
-            ".sidebar-menu a",
-            ".docs-menu a",
-            ".toc a",
-            ".nav-links a",
-            ".menu-item a",
-            'a[href^="/"]',
-            'a[href^="./"]',
-            'a[href^="../"]',
-        ]
-    )
-    # Added priority selectors - these are checked first and are more likely to be relevant navigation links
-    priority_selectors: List[str] = field(
-        default_factory=lambda: [
-            'nav[role="navigation"] a',
-            ".sidebar-menu a",
-            ".docs-menu a",
-            ".toc a",
-        ]
-    )
-    excluded_paths: List[str] = field(
-        default_factory=lambda: [
-            "/search",
-            "/login",
-            "/signup",
-            "/register",
-            "/contact",
-            "/download",
-            "/print",
-        ]
-    )
-    response_cache_size: int = 100  # Number of responses to cache
-    pool_connections: int = 100  # Number of connection pools to keep
-    pool_maxsize: int = 100  # Maximum number of connections per pool
-    pool_block: bool = True  # Whether to block when pool is full
-    verbose_progress: bool = (
-        False  # Whether to show detailed progress including site names
-    )
-
-    def __post_init__(self):
-        if self.menu_selectors is None:
-            self.menu_selectors = [
-                'nav[role="navigation"] a',
-                ".sidebar-menu a",
-                ".docs-menu a",
-                ".toc a",
-                ".nav-links a",
-                ".menu-item a",
-                'a[href^="/"]',
-                'a[href^="./"]',
-                'a[href^="../"]',
-            ]
-
-
-@dataclass
-class MenuNode:
-    url: str
-    title: str
-    children: List["MenuNode"]
-    level: int
-    parent_url: Optional[str] = None
 
 
 class WebScraper:
@@ -590,9 +512,6 @@ class WebScraper:
         """
         # Option 1: Replace non-ASCII characters with their closest ASCII equivalent
         text = text.encode("ascii", "replace").decode("ascii")
-
-        # Option 2: Remove characters that are not printable ASCII
-        # text = ''.join(c for c in text if c.isascii() and c.isprintable())
 
         return text
 

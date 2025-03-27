@@ -1,4 +1,5 @@
-from .scraper import WebScraper, ScraperConfig, MenuNode
+from .config import ScraperConfig
+from .models import MenuNode
+from .scraper import WebScraper
 
-__version__ = "0.1.0"
-__all__ = ["WebScraper", "ScraperConfig", "MenuNode"]
+__all__ = ["ScraperConfig", "MenuNode", "WebScraper"]
