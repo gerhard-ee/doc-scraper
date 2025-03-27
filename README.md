@@ -14,7 +14,8 @@ A Python-based web scraper that can extract text content from documentation webs
 - Automatic handling of relative and absolute URLs
 - Smart menu detection using common selectors
 - Concurrent scraping with configurable workers
-- Progress tracking with tqdm
+- Progress tracking with real-time feedback
+- Unicode character handling for PDF output
 
 ## Installation
 
@@ -58,8 +59,11 @@ docscraper scrape https://docs.databricks.com/aws/en/ -d 2
 # Traverse menu 3 levels deep and save as PDF
 docscraper scrape https://docs.databricks.com/aws/en/ -d 3 -f pdf
 
-# Fix Unicode character issues in PDF output
-docscraper scrape https://docs.databricks.com/aws/en/ -f pdf --ascii-only
+# Disable ASCII-only filtering in PDF output (not recommended)
+docscraper scrape https://docs.databricks.com/aws/en/ -f pdf --no-ascii-only
+
+# Show detailed progress with site URLs while scraping
+docscraper scrape https://docs.databricks.com/aws/en/ --verbose-progress
 ```
 
 You can also use the included shell script:
@@ -104,7 +108,8 @@ scraper = DocScraper()
 config = ScraperConfig(
     timeout=120,
     max_workers=10,
-    output_dir="custom_output"
+    output_dir="custom_output",
+    verbose_progress=True  # Show detailed progress
 )
 scraper = DocScraper(config)
 
@@ -124,6 +129,17 @@ scraper.save_as_pdf(content, "output.pdf")
 scraper.save_menu_tree("menu.json")
 ```
 
+## Progress Tracking
+
+The scraper provides real-time progress feedback during execution:
+
+- **Initial feedback**: Shows activity as soon as scraping starts
+- **Overall progress bar**: Tracks the total number of pages scraped
+- **Detailed progress**: Optional verbose mode shows individual URLs being processed
+- **Status messages**: Provides feedback during potentially slow operations
+
+This ensures you always know what the scraper is doing, even when processing large sites.
+
 ## Menu Traversal
 
 The scraper can automatically traverse menu structures to extract content from multiple pages. It detects menu links using common selectors including:
@@ -142,6 +158,12 @@ The scraper will:
 3. Follow those links up to the specified depth
 4. Save all content with clear separation between pages
 5. Include URLs as headers in both text and PDF output
+
+## Handling Unicode in PDFs
+
+By default, the scraper handles Unicode characters in PDFs by converting them to ASCII.
+This prevents errors with unsupported characters in the default PDF font. This is enabled
+by default but can be disabled with the `--no-ascii-only` flag (not recommended).
 
 ## Testing
 

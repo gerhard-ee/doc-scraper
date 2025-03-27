@@ -3,10 +3,11 @@ from bs4 import BeautifulSoup
 from urllib.parse import urlparse, urljoin
 from fpdf import FPDF
 import re
-from typing import Set, List, Dict, Optional, Tuple
+from typing import Set, List, Dict, Optional, Tuple, Deque
+from collections import deque
 import time
 from dataclasses import dataclass, field
-from collections import defaultdict
+from collections import defaultdict, OrderedDict
 import logging
 import json
 import os
@@ -17,6 +18,7 @@ from requests.adapters import HTTPAdapter
 import signal
 import sys
 from tqdm import tqdm
+from functools import lru_cache
 
 # Configure logging
 logging.basicConfig(
@@ -33,6 +35,7 @@ class ScraperConfig:
     retry_count: int = 3
     retry_delay: int = 2
     max_workers: int = 5
+    batch_size: int = 20  # Process URLs in batches to manage memory
     output_dir: str = "output"
     user_agent: str = (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
@@ -50,6 +53,27 @@ class ScraperConfig:
             'a[href^="../"]',
         ]
     )
+    # Added priority selectors - these are checked first and are more likely to be relevant navigation links
+    priority_selectors: List[str] = field(
+        default_factory=lambda: [
+            'nav[role="navigation"] a',
+            ".sidebar-menu a",
+            ".docs-menu a",
+            ".toc a",
+        ]
+    )
+    excluded_paths: List[str] = field(
+        default_factory=lambda: [
+            "/search",
+            "/login",
+            "/signup",
+            "/register",
+            "/contact",
+            "/download",
+            "/print",
+        ]
+    )
+    response_cache_size: int = 100  # Number of responses to cache
     pool_connections: int = 100  # Number of connection pools to keep
     pool_maxsize: int = 100  # Maximum number of connections per pool
     pool_block: bool = True  # Whether to block when pool is full
@@ -93,22 +117,28 @@ class WebScraper:
         self.headers = {"User-Agent": self.config.user_agent}
         self.visited_urls: Set[str] = set()
         self.base_url: Optional[str] = None
+        self.base_domain: Optional[str] = None
         self.menu_tree: Optional[MenuNode] = None
         self.session = self._create_session()
         self._setup_signal_handlers()
+        # Add caching for responses to avoid repeated requests for the same URL
+        self.response_cache = OrderedDict()
+        # Add domain pattern for better URL filtering
+        self.domain_pattern = None
 
     def _create_session(self) -> requests.Session:
         """Create a requests session with retry strategy and connection pooling."""
         session = requests.Session()
 
-        # Configure retry strategy
+        # Configure retry strategy with backoff for better handling of rate limits
         retry_strategy = Retry(
             total=self.config.retry_count,
             backoff_factor=self.config.retry_delay,
             status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["GET", "HEAD"],
         )
 
-        # Configure connection pooling
+        # Configure connection pooling with optimized settings
         adapter = HTTPAdapter(
             max_retries=retry_strategy,
             pool_connections=self.config.pool_connections,
@@ -119,6 +149,9 @@ class WebScraper:
         # Mount the adapter for both HTTP and HTTPS
         session.mount("http://", adapter)
         session.mount("https://", adapter)
+
+        # Enable TCP keepalive for better connection reuse
+        session.headers.update({"Connection": "keep-alive"})
 
         return session
 
@@ -138,6 +171,34 @@ class WebScraper:
         if hasattr(self, "session"):
             self.session.close()
         logger.info("Cleanup completed")
+
+    @lru_cache(maxsize=1000)
+    def _is_same_domain(self, url: str) -> bool:
+        """Check if URL is from the same domain as the base URL (cached for performance)."""
+        if not self.base_domain:
+            return True
+        parsed = urlparse(url)
+        return parsed.netloc == self.base_domain
+
+    def _get_cached_or_request(self, url: str) -> requests.Response:
+        """Get response from cache or make a new request."""
+        if url in self.response_cache:
+            return self.response_cache[url]
+
+        response = self.session.get(
+            url,
+            headers=self.headers,
+            timeout=self.config.timeout,
+            allow_redirects=True,
+        )
+        response.raise_for_status()
+
+        # Cache the response and maintain cache size
+        self.response_cache[url] = response
+        if len(self.response_cache) > self.config.response_cache_size:
+            self.response_cache.popitem(last=False)
+
+        return response
 
     def scrape_page(
         self,
@@ -162,50 +223,47 @@ class WebScraper:
             logger.error(f"Invalid URL provided: {url}")
             raise ValueError("Invalid URL provided")
 
+        # If we've already visited this URL, return immediately
         if url in self.visited_urls:
             logger.debug(f"URL already visited: {url}")
             return {}, None
 
+        # Mark URL as visited immediately to prevent duplicate processing in concurrent requests
         self.visited_urls.add(url)
         result = {}
 
         try:
-            # Only log the site being scraped if verbose progress is enabled
+            # Initialize base domain for first request to improve filtering
+            if self.base_url is None:
+                self.base_url = url
+                parsed_base = urlparse(url)
+                self.base_domain = parsed_base.netloc
+                logger.info(f"Base URL set to: {self.base_url}")
+                logger.info(f"Base domain set to: {self.base_domain}")
+
+            # Show progress updates if configured
             if self.config.verbose_progress:
                 logger.info(f"Scraping: {url}")
             elif progress_bar:
-                # Show minimal info in progress bar to indicate activity
                 progress_bar.set_description(f"Scraping page {len(self.visited_urls)}")
-                progress_bar.update(0)  # Refresh without incrementing
+                progress_bar.update(0)
 
-            # Update progress bar to show activity during request
-            if progress_bar:
-                progress_bar.set_description(f"Fetching: {url.split('/')[-1]}")
-                progress_bar.update(0)  # Refresh without incrementing
+            # Get response (either from cache or new request)
+            response = self._get_cached_or_request(url)
 
-            response = self.session.get(
-                url,
-                headers=self.headers,
-                timeout=self.config.timeout,
-                allow_redirects=True,
-            )
-            response.raise_for_status()
-
-            if self.base_url is None:
-                self.base_url = url
-                logger.info(f"Base URL set to: {self.base_url}")
-
-            # Update progress to show parsing activity
+            # Parse content with BeautifulSoup
             if progress_bar:
                 progress_bar.set_description("Parsing content...")
-                progress_bar.update(0)  # Refresh without incrementing
+                progress_bar.update(0)
 
             soup = BeautifulSoup(response.text, "html.parser")
 
+            # Extract content
             text = self._extract_text(soup)
             title = self._extract_title(soup)
             result[url] = text
 
+            # Create or update menu node structure
             current_level = 0 if parent_node is None else parent_node.level + 1
             current_node = MenuNode(
                 url=url,
@@ -221,12 +279,19 @@ class WebScraper:
             if parent_node is not None:
                 parent_node.children.append(current_node)
 
-            # Update progress bar after getting content
+            # Update progress
             if progress_bar:
                 progress_bar.update(1)
 
+            # Process nested pages if max_depth > 0
             if max_depth > 0:
+                # Find all menu links, prioritizing more important navigation elements
                 menu_links = self._find_menu_links(soup, url)
+
+                # Apply early filtering to remove likely irrelevant URLs
+                menu_links = self._filter_urls(menu_links)
+
+                # Update progress info if links were found
                 if menu_links and self.config.verbose_progress:
                     logger.info(
                         f"Found {len(menu_links)} menu items at depth {max_depth}"
@@ -235,59 +300,66 @@ class WebScraper:
                     progress_bar.set_description(
                         f"Found {len(menu_links)} sub-pages to process"
                     )
-                    progress_bar.update(0)  # Refresh without incrementing
+                    progress_bar.update(0)
 
-                # If we have a lot of links, update the progress bar total
-                if progress_bar and menu_links and len(menu_links) > 0:
-                    # Estimate the new total (current + new links)
+                # Update progress bar estimation
+                if progress_bar and menu_links:
                     new_estimate = progress_bar.total + min(len(menu_links), 100)
                     progress_bar.total = new_estimate
 
-                with ThreadPoolExecutor(
-                    max_workers=self.config.max_workers
-                ) as executor:
-                    future_to_url = {
-                        executor.submit(
-                            self.scrape_page, link, max_depth - 1, current_node
-                        ): link
-                        for link in menu_links
-                        if link not in self.visited_urls
-                    }
+                # Process URLs in batches for better memory management
+                for i in range(0, len(menu_links), self.config.batch_size):
+                    batch = menu_links[i : i + self.config.batch_size]
+                    # Skip URLs that have already been visited (may have been added by other concurrent processes)
+                    batch = [link for link in batch if link not in self.visited_urls]
 
-                    # Only show detailed progress if verbose progress is enabled
-                    if self.config.verbose_progress:
-                        with tqdm(
-                            total=len(future_to_url),
-                            desc=f"Scraping pages at depth {max_depth}",
-                            unit="page",
-                            leave=False,
-                        ) as pbar:
+                    # Process this batch concurrently
+                    with ThreadPoolExecutor(
+                        max_workers=self.config.max_workers
+                    ) as executor:
+                        future_to_url = {
+                            executor.submit(
+                                self.scrape_page,
+                                link,
+                                max_depth - 1,
+                                current_node,
+                                progress_bar,
+                            ): link
+                            for link in batch
+                        }
+
+                        if self.config.verbose_progress:
+                            with tqdm(
+                                total=len(future_to_url),
+                                desc=f"Batch {i//self.config.batch_size+1}/{(len(menu_links)+self.config.batch_size-1)//self.config.batch_size}",
+                                unit="page",
+                                leave=False,
+                            ) as pbar:
+                                for future in as_completed(future_to_url):
+                                    link = future_to_url[future]
+                                    try:
+                                        sub_result, _ = future.result()
+                                        result.update(sub_result)
+                                        pbar.update(1)
+                                        pbar.set_postfix({"current": link})
+                                    except Exception as e:
+                                        logger.error(f"Error scraping {link}: {str(e)}")
+                                        pbar.update(1)
+                        else:
+                            # Process without detailed progress
+                            completed = 0
                             for future in as_completed(future_to_url):
                                 link = future_to_url[future]
                                 try:
                                     sub_result, _ = future.result()
                                     result.update(sub_result)
-                                    pbar.update(1)
-                                    pbar.set_postfix({"current": link})
+                                    completed += 1
+                                    if progress_bar and completed % 5 == 0:
+                                        progress_bar.update(5)
                                 except Exception as e:
-                                    logger.error(f"Error scraping {link}: {str(e)}")
-                                    pbar.update(1)  # Update progress even on error
-                    else:
-                        # Process without detailed progress but update main progress bar
-                        completed = 0
-                        for future in as_completed(future_to_url):
-                            link = future_to_url[future]
-                            try:
-                                sub_result, _ = future.result()
-                                result.update(sub_result)
-                                completed += 1
-                                # Update main progress bar periodically
-                                if progress_bar and completed % 5 == 0:
-                                    progress_bar.update(5)
-                            except Exception as e:
-                                if self.config.verbose_progress:
-                                    logger.error(f"Error scraping {link}: {str(e)}")
-                                completed += 1
+                                    if self.config.verbose_progress:
+                                        logger.error(f"Error scraping {link}: {str(e)}")
+                                    completed += 1
 
             return result, current_node
 
@@ -405,29 +477,70 @@ class WebScraper:
         return text.strip()
 
     def _find_menu_links(self, soup: BeautifulSoup, current_url: str) -> List[str]:
-        """Find menu links in the page."""
+        """Find menu links in the page with priority ordering."""
         menu_links = set()
 
-        for selector in self.config.menu_selectors:
+        # First check priority selectors which are more likely to be relevant navigation
+        for selector in self.config.priority_selectors:
             for link in soup.select(selector):
                 href = link.get("href")
                 if href and isinstance(href, str):
-                    # Convert relative URLs to absolute
                     absolute_url = urljoin(current_url, href)
+                    menu_links.add(absolute_url)
 
-                    # Only include URLs from the same domain and path
-                    if (
-                        self._is_valid_url(absolute_url)
-                        and self.base_url is not None
-                        and absolute_url.startswith(self.base_url)
-                        and not any(
-                            x in absolute_url
-                            for x in ["#", "?", "javascript:", "mailto:", "tel:"]
-                        )
-                    ):
+        # Then check other selectors if we still need more links
+        if (
+            len(menu_links) < 5
+        ):  # Only look for more if we don't have enough high-priority links
+            for selector in self.config.menu_selectors:
+                # Skip selectors we already processed
+                if selector in self.config.priority_selectors:
+                    continue
+
+                for link in soup.select(selector):
+                    href = link.get("href")
+                    if href and isinstance(href, str):
+                        absolute_url = urljoin(current_url, href)
                         menu_links.add(absolute_url)
 
         return list(menu_links)
+
+    def _filter_urls(self, urls: List[str]) -> List[str]:
+        """Filter URLs to remove likely irrelevant ones and improve performance."""
+        filtered = []
+
+        for url in urls:
+            # Skip URLs we've already visited
+            if url in self.visited_urls:
+                continue
+
+            # Skip URLs that aren't from the same domain
+            if not self._is_same_domain(url):
+                continue
+
+            # Skip URLs that contain excluded paths
+            if any(excluded in url for excluded in self.config.excluded_paths):
+                continue
+
+            # Skip URLs with fragments or query strings (often duplicate content)
+            parsed = urlparse(url)
+            if parsed.fragment or parsed.query:
+                continue
+
+            # Skip URLs that don't start with the base URL (likely external links)
+            if self.base_url and not url.startswith(self.base_url):
+                continue
+
+            # Skip URLs with common non-content indicators
+            if any(x in url for x in ["javascript:", "mailto:", "tel:", "#", "?"]):
+                continue
+
+            filtered.append(url)
+
+        # Prioritize URLs that look like they contain content (those with more path segments)
+        filtered.sort(key=lambda u: len(urlparse(u).path.split("/")), reverse=True)
+
+        return filtered
 
     def save_as_text(self, content: Dict[str, str], output_file: str):
         """Save content to a text file."""

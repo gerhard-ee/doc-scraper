@@ -58,12 +58,17 @@ def cli():
     "--ascii-only",
     is_flag=True,
     default=True,
-    help="Filter non-ASCII characters in PDF output (default: enabled)",
+    help="Filter non-ASCII characters in PDF output (prevents encoding errors)",
+)
+@click.option(
+    "--no-ascii-only",
+    is_flag=True,
+    help="Disable ASCII-only filtering in PDF output (may cause font errors)",
 )
 @click.option(
     "--verbose-progress",
     is_flag=True,
-    help="Show detailed progress including site names being scraped",
+    help="Show detailed progress including individual URLs being scraped",
 )
 def scrape(
     url: str,
@@ -78,15 +83,21 @@ def scrape(
     pool_maxsize: int,
     no_pool_block: bool,
     ascii_only: bool,
+    no_ascii_only: bool,
     verbose_progress: bool,
 ):
     """Scrape content from a website starting from the given URL."""
     setup_logging(verbose)
     logger = logging.getLogger(__name__)
 
+    # Handle conflicting options
+    if no_ascii_only:
+        ascii_only = False
+
     try:
         # Show immediate feedback
         print(f"Doc Scraper starting... URL: {url}")
+        print(f"Depth: {depth}, Output format: {format}, Workers: {max_workers}")
 
         # Create configuration
         config = ScraperConfig(
@@ -117,7 +128,7 @@ def scrape(
             print(f"Saving menu tree as JSON...")
             scraper.save_menu_tree("menu_tree.json")
 
-        logger.info(f"Successfully scraped {len(content)} pages")
+        print(f"Successfully scraped {len(content)} pages")
         return 0
 
     except Exception as e:
