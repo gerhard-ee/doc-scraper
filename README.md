@@ -47,6 +47,9 @@ docscraper scrape https://docs.databricks.com/aws/en/
 # Save as PDF
 docscraper scrape https://docs.databricks.com/aws/en/ -f pdf
 
+# Scrape Snowflake documentation
+docscraper scrape https://docs.snowflake.com/en/reference -d 2
+
 # Save as both text and PDF with custom output directory
 docscraper scrape https://docs.databricks.com/aws/en/ -f both -o my_output
 
@@ -129,6 +132,57 @@ scraper.save_as_pdf(content, "output.pdf")
 scraper.save_menu_tree("menu.json")
 ```
 
+## Docker Support
+
+You can also run the scraper using Docker:
+
+### Building the Docker image
+
+```bash
+docker build -t docscraper .
+```
+
+### Running with Docker
+
+```bash
+# Basic usage (mount the output directory)
+docker run --rm -v "$(pwd)/output:/app/output" docscraper https://docs.databricks.com/aws/en/
+
+# Save as PDF
+docker run --rm -v "$(pwd)/output:/app/output" docscraper https://docs.databricks.com/aws/en/ -f pdf
+
+# Traverse menu up to 2 levels deep
+docker run --rm -v "$(pwd)/output:/app/output" docscraper https://docs.databricks.com/aws/en/ -d 2
+```
+
+### Using Docker Compose
+
+1. Edit the command in `docker-compose.yml` or override it at runtime:
+
+```bash
+# Using the default command from docker-compose.yml
+docker-compose up
+
+# Overriding the command
+docker-compose run docscraper https://docs.databricks.com/aws/en/ -d 1 -f pdf
+```
+
+2. Find the output in the `./output` directory.
+
+### Testing Docker Setup
+
+Run the included test script to verify the Docker setup:
+
+```bash
+# Make the script executable
+chmod +x test-docker.sh
+
+# Run the test
+./test-docker.sh
+```
+
+This will build the Docker image and run a simple scrape test.
+
 ## Progress Tracking
 
 The scraper provides real-time progress feedback during execution:
@@ -139,6 +193,33 @@ The scraper provides real-time progress feedback during execution:
 - **Status messages**: Provides feedback during potentially slow operations
 
 This ensures you always know what the scraper is doing, even when processing large sites.
+
+## Supported Documentation Sites
+
+The scraper is designed to work with various documentation sites including:
+
+### Databricks
+
+```bash
+docscraper scrape https://docs.databricks.com/aws/en/ -d 2
+```
+
+### Snowflake
+
+```bash
+# Scrape Snowflake reference documentation
+docscraper scrape https://docs.snowflake.com/en/reference -d 2
+
+# Scrape specific Snowflake section
+docscraper scrape https://docs.snowflake.com/en/sql-reference -d 3
+```
+
+The Snowflake scraper handles the unique structure of Snowflake documentation including:
+
+- Left-side navigation menus
+- Nested documentation sections
+- Tables and code samples
+- API reference documentation
 
 ## Menu Traversal
 

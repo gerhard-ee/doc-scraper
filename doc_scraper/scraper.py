@@ -19,6 +19,7 @@ from functools import lru_cache
 
 from .config import ScraperConfig
 from .models import MenuNode
+from .site_adapters import AdapterRegistry
 
 # Configure logging
 logging.basicConfig(
@@ -381,54 +382,33 @@ class WebScraper:
 
     def _extract_text(self, soup: BeautifulSoup) -> str:
         """Extract and clean text content from a BeautifulSoup object."""
-        # Remove unwanted elements
-        for element in soup(["script", "style", "nav", "footer", "iframe"]):
-            element.decompose()
-
-        # Get text content
-        text = soup.get_text()
-
-        # Clean up text
-        lines = (line.strip() for line in text.splitlines())
-        chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
-        text = "\n".join(chunk for chunk in chunks if chunk)
-
-        # Remove excessive newlines
-        text = re.sub(r"\n{3,}", "\n\n", text)
-
-        return text.strip()
+        # Use the appropriate site adapter for content extraction
+        adapter = AdapterRegistry.get_adapter_for_url(self.base_url or "")
+        return adapter.extract_content(soup)
 
     def _find_menu_links(self, soup: BeautifulSoup, current_url: str) -> List[str]:
         """Find menu links in the page with priority ordering."""
+        # Use the appropriate site adapter for menu link extraction
+        adapter = AdapterRegistry.get_adapter_for_url(current_url)
+        
         menu_links = set()
 
         # First check priority selectors which are more likely to be relevant navigation
-        for selector in self.config.priority_selectors:
-            for link in soup.select(selector):
-                href = link.get("href")
-                if href and isinstance(href, str):
-                    absolute_url = urljoin(current_url, href)
-                    menu_links.add(absolute_url)
+        priority_links = adapter.find_menu_links(soup, current_url, self.config.priority_selectors)
+        menu_links.update(priority_links)
 
         # Then check other selectors if we still need more links
-        if (
-            len(menu_links) < 5
-        ):  # Only look for more if we don't have enough high-priority links
-            for selector in self.config.menu_selectors:
-                # Skip selectors we already processed
-                if selector in self.config.priority_selectors:
-                    continue
-
-                for link in soup.select(selector):
-                    href = link.get("href")
-                    if href and isinstance(href, str):
-                        absolute_url = urljoin(current_url, href)
-                        menu_links.add(absolute_url)
+        if len(menu_links) < 5:  # Only look for more if we don't have enough high-priority links
+            # Use only selectors that aren't in priority_selectors
+            additional_selectors = [s for s in self.config.menu_selectors if s not in self.config.priority_selectors]
+            additional_links = adapter.find_menu_links(soup, current_url, additional_selectors)
+            menu_links.update(additional_links)
 
         return list(menu_links)
 
     def _filter_urls(self, urls: List[str]) -> List[str]:
         """Filter URLs to remove likely irrelevant ones and improve performance."""
+        # Start with basic filtering
         filtered = []
 
         for url in urls:
@@ -458,6 +438,10 @@ class WebScraper:
                 continue
 
             filtered.append(url)
+
+        # Apply site-specific filtering using the appropriate adapter
+        adapter = AdapterRegistry.get_adapter_for_url(self.base_url or "")
+        filtered = adapter.filter_urls(filtered, self.base_url or "")
 
         # Prioritize URLs that look like they contain content (those with more path segments)
         filtered.sort(key=lambda u: len(urlparse(u).path.split("/")), reverse=True)

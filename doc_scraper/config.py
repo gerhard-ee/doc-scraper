@@ -23,6 +23,19 @@ class ScraperConfig:
             ".toc a",
             ".nav-links a",
             ".menu-item a",
+            # Snowflake documentation selectors - enhanced for better coverage
+            ".md-nav__item a",
+            ".md-sidebar a",
+            ".md-nav__link",
+            ".snow-sidebar-nav a", 
+            ".nav-tree a",
+            ".documentationContent nav a",
+            ".navigation-menu a",
+            ".header-navigation-menu a",
+            ".main-nav a",
+            ".page-list a",
+            ".article-nav a",
+            # General selectors
             'a[href^="/"]',
             'a[href^="./"]',
             'a[href^="../"]',
@@ -35,6 +48,12 @@ class ScraperConfig:
             ".sidebar-menu a",
             ".docs-menu a",
             ".toc a",
+            # Snowflake documentation priority selectors
+            ".snow-sidebar-nav a",
+            ".md-nav__item a",
+            ".nav-tree a",
+            ".documentationContent nav a",
+            ".navigation-menu a",
         ]
     )
     excluded_paths: List[str] = field(

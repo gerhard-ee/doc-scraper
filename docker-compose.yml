@@ -1,0 +1,13 @@
+version: "3.8"
+
+services:
+  docscraper:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - ./output:/app/output
+    environment:
+      - PYTHONPATH=/app
+    # Default command - will be overridden by command line arguments
+    command: ["--help"]

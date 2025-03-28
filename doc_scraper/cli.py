@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 from typing import Optional
 from .scraper import WebScraper, ScraperConfig
+from .site_adapters import AdapterRegistry
 
 
 def setup_logging(verbose: bool = False) -> None:
@@ -97,7 +98,6 @@ def scrape(
     try:
         # Show immediate feedback
         print(f"Doc Scraper starting... URL: {url}")
-        print(f"Depth: {depth}, Output format: {format}, Workers: {max_workers}")
 
         # Create configuration
         config = ScraperConfig(
@@ -111,6 +111,23 @@ def scrape(
             verbose_progress=verbose_progress,
         )
 
+        # Get the appropriate adapter for this URL
+        adapter = AdapterRegistry.get_adapter_for_url(url)
+        adapter_name = [name for name, cls in AdapterRegistry._adapters.items() 
+                       if isinstance(adapter, cls)][0]
+        
+        # Show adapter info
+        if adapter_name != 'default':
+            print(f"Using specialized adapter: {adapter_name}")
+            
+            # Auto-increase depth for some sites if set to 0
+            if adapter_name == 'snowflake' and depth == 0:
+                orig_depth = depth
+                depth = 2
+                print(f"Auto-increasing depth from {orig_depth} to {depth} for better content extraction")
+                
+        print(f"Depth: {depth}, Output format: {format}, Workers: {max_workers}")
+        
         # Create and run scraper
         scraper = WebScraper(config)
         content = scraper.scrape_site(url, depth)
